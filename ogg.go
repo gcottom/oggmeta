@@ -178,6 +178,10 @@ func (o *OggTag) SetTrackTotal(trackTotal int) {
 	o.TrackTotal = fmt.Sprintf("%d", trackTotal)
 }
 
+func (o *OggTag) Save(w io.Writer) error {
+	return SaveTags(o, w)
+}
+
 func ReadOGG(r io.ReadSeeker) (*OggTag, error) {
 	dec := &OGGDecoder{Reader: r}
 	return dec.ReadTags()
