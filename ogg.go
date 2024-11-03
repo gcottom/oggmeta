@@ -177,3 +177,8 @@ func (o *OggTag) SetTrackNumber(trackNumber int) {
 func (o *OggTag) SetTrackTotal(trackTotal int) {
 	o.TrackTotal = fmt.Sprintf("%d", trackTotal)
 }
+
+func ReadOGG(r io.ReadSeeker) (*OggTag, error) {
+	dec := &OGGDecoder{Reader: r}
+	return dec.ReadTags()
+}
