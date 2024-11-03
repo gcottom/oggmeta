@@ -1,6 +1,6 @@
 module github.com/gcottom/oggmeta
 
-go 1.22.3
+go 1.18
 
 require (
 	github.com/aler9/writerseeker v1.1.0
