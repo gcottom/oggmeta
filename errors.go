@@ -1,4 +1,4 @@
-package ogg
+package oggmeta
 
 type ErrInvalidOggs struct{}
 

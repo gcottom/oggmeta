@@ -1,4 +1,4 @@
-package ogg
+package oggmeta
 
 var crcTable [256]uint32
 
