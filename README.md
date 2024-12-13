@@ -6,10 +6,10 @@ OGGMeta is a metadata reader and writer for OGG Vorbis and Opus files. It's buil
 This project is licensed under the MIT License. See the LICENSE file for details. 
 
 ## Related Links
-[AudioMeta v3](github.com/gcottom/audiometa/v3)
+[audiometa v3](https://github.com/gcottom/audiometa/v3)
 
-[MP3Meta](github.com/gcottom/mp3meta)
+[mp3meta](https://github.com/gcottom/mp3meta)
 
-[MP4Meta](github.com/gcottom/mp4meta)
+[mp4meta](https://github.com/gcottom/mp4meta)
 
-[FLACMeta](github.com/gcottom/flacmeta)
+[flacmeta](https://github.com/gcottom/flacmeta)
