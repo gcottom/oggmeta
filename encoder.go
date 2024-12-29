@@ -229,7 +229,7 @@ func SaveTags(tag *OggTag, writer io.Writer) error {
 		}
 		return nil
 	}
-	if _, err := io.Copy(writer, bytes.NewReader(tempWriter.Bytes())); err != nil {
+	if _, err := io.Copy(writer, tempWriter.BytesReader()); err != nil {
 		return err
 	}
 	return nil
