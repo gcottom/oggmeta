@@ -112,13 +112,12 @@ func TestWriteOggVorbis(t *testing.T) {
 	})
 
 	t.Run("TestWriteOggVorbis-file", func(t *testing.T) {
-		err := os.Mkdir("./testdata/temp", 0755)
-		assert.NoError(t, err)
+		dir := t.TempDir()
 		of, err := os.ReadFile("./testdata/test1.ogg")
 		assert.NoError(t, err)
-		err = os.WriteFile("./testdata/temp/test1.ogg", of, 0755)
+		err = os.WriteFile(filepath.Join(dir, "test1.ogg"), of, 0755)
 		assert.NoError(t, err)
-		path, _ := filepath.Abs("./testdata/temp/test1.ogg")
+		path, _ := filepath.Abs(filepath.Join(dir, "test1.ogg"))
 		f, err := os.Open(path)
 		assert.NoError(t, err)
 		defer f.Close()
@@ -155,8 +154,6 @@ func TestWriteOggVorbis(t *testing.T) {
 		assert.NoError(t, err)
 		dec = &OGGDecoder{Reader: f}
 		tag, err = dec.ReadTags()
-		assert.NoError(t, err)
-		err = os.RemoveAll("./testdata/temp")
 		assert.NoError(t, err)
 		assert.Equal(t, tag.GetArtist(), "TestArtist1")
 		assert.Equal(t, tag.GetAlbum(), "TestAlbum1")

@@ -15,6 +15,9 @@ func readUint32(reader io.Reader) (uint32, error) {
 }
 
 func readBytes(reader io.Reader, n uint) ([]byte, error) {
+	if finite, ok := reader.(interface{ Len() int }); ok && n > uint(finite.Len()) {
+		return nil, io.ErrUnexpectedEOF
+	}
 	data := make([]byte, n)
 	_, err := io.ReadFull(reader, data)
 	if err != nil {

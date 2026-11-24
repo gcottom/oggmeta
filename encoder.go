@@ -5,18 +5,22 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"image"
 	"image/jpeg"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strings"
 
 	"github.com/aler9/writerseeker"
 )
 
 func (enc *OGGEncoder) WritePackets(flag byte, granulePosition int64, packets [][]byte) error {
+	if len(packets) == 0 {
+		packets = dummyPacket[:]
+	}
 	header := OGGPageHeader{
 		Oggs:               Oggs,
 		Version:            0,
@@ -154,62 +158,122 @@ func (enc *OGGEncoder) writePage(h *OGGPageHeader, segtbl []byte, pay segmentize
 	return nil
 }
 
+// SaveTags saves edited comments into writer. The replacement must fit on the original comment page.
 func SaveTags(tag *OggTag, writer io.Writer) error {
-	if _, err := tag.reader.Seek(0, 0); err != nil {
+	if tag == nil || tag.reader == nil || writer == nil {
+		return errors.New("oggmeta: source, destination and tags are required")
+	}
+	if tag.Codec != Vorbis && tag.Codec != Opus {
+		return errors.New("oggmeta: unsupported codec")
+	}
+	if _, err := tag.reader.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
 	tempWriter := &writerseeker.WriterSeeker{}
+	defer tempWriter.Close()
 	decoder := &OGGDecoder{Reader: tag.reader}
-	encoder := &OGGEncoder{Writer: tempWriter}
-
-	page, err := decoder.Decode()
-	if err != nil {
-		return err
+	fields := make(map[string]string)
+	for k, v := range tag.UnmappedFields {
+		key := strings.ToUpper(k)
+		if _, mapped := tagFieldMapping[key]; !mapped && key != "METADATA_BLOCK_PICTURE" && key != "" && !strings.Contains(key, "=") {
+			fields[key] = v
+		}
 	}
-
-	if err = encoder.EncodeBOS(page.Header.GranulePosition, page.Packets); err != nil {
-		return err
+	for key, field := range tagFieldMapping {
+		if val := reflect.ValueOf(tag).Elem().FieldByName(field).String(); val != "" {
+			fields[key] = val
+		}
 	}
-
-	for {
-		page, err = decoder.Decode()
-		if err != nil {
-			if err == io.EOF {
-				break // Reached the end of the input Ogg stream
-			}
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	comments := make([]string, 0, len(keys))
+	for _, key := range keys {
+		comments = append(comments, key+"="+fields[key])
+	}
+	var img []byte
+	if tag.CoverArt != nil {
+		if *tag.CoverArt == nil {
+			return errors.New("oggmeta: nil cover image")
+		}
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, *tag.CoverArt, nil); err != nil {
 			return err
 		}
-
-		if bytes.HasPrefix(page.Packets[0], VorbisPrefix) || bytes.HasPrefix(page.Packets[0], OpusPrefix) {
-			commentFields := make([]string, 0)
-			for key, value := range tagFieldMapping {
-				if reflect.ValueOf(tag).Elem().FieldByName(value).IsValid() {
-					commentFields = append(commentFields, fmt.Sprintf("%s=%s", key, reflect.ValueOf(tag).Elem().FieldByName(value).String()))
+		var err error
+		img, err = createMetadataBlockPicture(buf.Bytes())
+		if err != nil {
+			return err
+		}
+	}
+	replacement := createCommentPacket(comments, img, tag.Codec, tag.Vendor)
+	var serial uint32
+	var sawPage, replaced, ended bool
+	for {
+		page, segs, err := decoder.decodePage()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if !sawPage {
+			serial = page.Header.SerialNumber
+			sawPage = true
+		} else if page.Header.SerialNumber != serial || ended || page.Header.Flags&FlagBOS != 0 {
+			return errors.New("oggmeta: chained or multiplexed Ogg is not supported for saving")
+		}
+		ended = page.Header.Flags&FlagEOS != 0
+		// Only the codec's comment packet is replaced; keep original lacing and page numbering elsewhere.
+		packetStart := 0
+		for i, packet := range page.Packets {
+			packetEnd := packetStart
+			for packetEnd < len(segs) {
+				v := segs[packetEnd]
+				packetEnd++
+				if v < MaxSegSize {
+					break
 				}
 			}
-			img := make([]byte, 0)
-			if tag.CoverArt != nil {
-				// Convert album art image to JPEG format
-				buf := new(bytes.Buffer)
-				if err = jpeg.Encode(buf, *tag.CoverArt, nil); err == nil {
-					img, _ = createMetadataBlockPicture(buf.Bytes())
+			if !replaced && !(i == 0 && page.Header.Flags&FlagCOP != 0) &&
+				((tag.Codec == Vorbis && bytes.HasPrefix(packet, VorbisPrefix)) || (tag.Codec == Opus && bytes.HasPrefix(packet, OpusPrefix))) {
+				if segs[packetEnd-1] == MaxSegSize {
+					return errors.New("oggmeta: comments spanning pages are unsupported")
 				}
+				n := len(replacement) / MaxSegSize
+				if len(segs)-(packetEnd-packetStart)+n+1 > MaxSegSize {
+					return errors.New("oggmeta: updated comments do not fit their original page")
+				}
+				newSegs := append([]byte(nil), segs[:packetStart]...)
+				for j := 0; j < n; j++ {
+					newSegs = append(newSegs, MaxSegSize)
+				}
+				newSegs = append(newSegs, byte(len(replacement)%MaxSegSize))
+				newSegs = append(newSegs, segs[packetEnd:]...)
+				segs = newSegs
+				page.Packets[i] = replacement
+				replaced = true
+				break
 			}
-			page.Packets[0] = createCommentPacket(commentFields, img, tag.Codec)
-			if err = encoder.Encode(page.Header.GranulePosition, page.Packets); err != nil {
+			packetStart = packetEnd
+		}
+		payload := bytes.Join(page.Packets, nil)
+		page.Header.Segments = byte(len(segs))
+		page.Header.CRC = 0
+		page.Header.CRC = calculateChecksum(page.Header.toBytesSlice(), payload, segs)
+		for _, data := range [][]byte{page.Header.toBytesSlice(), segs, payload} {
+			if _, err := tempWriter.Write(data); err != nil {
 				return err
 			}
-		} else {
-			if page.Header.Flags == FlagEOS {
-				if err = encoder.EncodeEOS(page.Header.GranulePosition, page.Packets); err != nil {
-					return err
-				}
-			} else {
-				if err = encoder.Encode(page.Header.GranulePosition, page.Packets); err != nil {
-					return err
-				}
-			}
 		}
+	}
+	if !replaced {
+		return errors.New("oggmeta: no matching comment packet found")
+	}
+	if !ended {
+		return io.ErrUnexpectedEOF
 	}
 	if reflect.TypeOf(writer) == reflect.TypeOf(new(os.File)) {
 		path, err := filepath.Abs((writer.(*os.File)).Name())
@@ -257,8 +321,10 @@ func createMetadataBlockPicture(albumArtData []byte) ([]byte, error) {
 	return res.Bytes(), nil
 }
 
-func createCommentPacket(commentFields []string, albumArt []byte, codec string) []byte {
-	vendorString := "gcottom-oggmeta"
+func createCommentPacket(commentFields []string, albumArt []byte, codec, vendorString string) []byte {
+	if vendorString == "" {
+		vendorString = "gcottom-oggmeta"
+	}
 
 	buf := make([]byte, 4)
 	binary.LittleEndian.PutUint32(buf, uint32(len(vendorString)))

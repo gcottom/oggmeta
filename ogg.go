@@ -7,6 +7,7 @@ import (
 	"strconv"
 )
 
+// OggTag holds Vorbis or Opus comments and retains its input for Save.
 type OggTag struct {
 	Album          string
 	AlbumArtist    string
@@ -44,6 +45,7 @@ func (o *OggTag) ClearAllTags() {
 	o.Title = ""
 	o.TrackNumber = ""
 	o.TrackTotal = ""
+	o.UnmappedFields = nil
 }
 
 func (o *OggTag) GetAlbum() string {
@@ -178,10 +180,12 @@ func (o *OggTag) SetTrackTotal(trackTotal int) {
 	o.TrackTotal = fmt.Sprintf("%d", trackTotal)
 }
 
+// Save replaces the comment packet in a single-stream Ogg source, buffering the result before writing.
 func (o *OggTag) Save(w io.Writer) error {
 	return SaveTags(o, w)
 }
 
+// ReadOGG reads the first complete Vorbis or Opus comment packet from r.
 func ReadOGG(r io.ReadSeeker) (*OggTag, error) {
 	dec := &OGGDecoder{Reader: r}
 	return dec.ReadTags()

@@ -4,32 +4,48 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
+	_ "image/png"
 	"io"
 	"reflect"
 	"strings"
 )
 
 func (dec *OGGDecoder) Decode() (*OGGPage, error) {
+	page, _, err := dec.decodePage()
+	return page, err
+}
+
+func (dec *OGGDecoder) decodePage() (*OGGPage, []byte, error) {
+	if dec.Reader == nil {
+		return nil, nil, errors.New("oggmeta: nil source")
+	}
 	oggPage := new(OGGPage)
 
 	if err := binary.Read(dec.Reader, binary.LittleEndian, &oggPage.Header); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if oggPage.Header.Oggs != Oggs {
-		return nil, new(ErrInvalidOggs)
+		return nil, nil, new(ErrInvalidOggs)
 	}
 
+	if oggPage.Header.Version != 0 {
+		return nil, nil, errors.New("oggmeta: unsupported page version")
+	}
 	if oggPage.Header.Segments < 1 {
-		return nil, new(ErrBadSegs)
+		return nil, nil, new(ErrBadSegs)
 	}
 
 	segmentTable := make([]byte, oggPage.Header.Segments)
 
 	if _, err := io.ReadFull(dec.Reader, segmentTable); err != nil {
-		return nil, err
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, nil, err
 	}
 
 	packetLengths := make([]int, 0)
@@ -53,7 +69,10 @@ func (dec *OGGDecoder) Decode() (*OGGPage, error) {
 		packet := make([]byte, packetLength)
 
 		if _, err := io.ReadFull(dec.Reader, packet); err != nil {
-			return nil, err
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, nil, err
 		}
 
 		oggPage.Packets = append(oggPage.Packets, packet)
@@ -68,23 +87,30 @@ func (dec *OGGDecoder) Decode() (*OGGPage, error) {
 
 	crc32 := calculateChecksum(headerBytes, payloadBytes, segTableBytes)
 	if crc32 != oldCRC {
-		fmt.Println("CRC32 mismatch")
+		return nil, nil, errors.New("oggmeta: page checksum mismatch")
 	}
 
-	return oggPage, nil
+	oggPage.Header.CRC = oldCRC
+	return oggPage, segmentTable, nil
 }
 
 func (dec *OGGDecoder) ReadTags() (*OggTag, error) {
 	for {
-		oggPage, err := dec.Decode()
+		oggPage, segments, err := dec.decodePage()
 		if err != nil {
 			if err == io.EOF {
-				return nil, nil
+				return nil, errors.New("oggmeta: no Vorbis or Opus comments found")
 			}
 			return nil, err
 		}
 
-		for _, packet := range oggPage.Packets {
+		for i, packet := range oggPage.Packets {
+			if i == 0 && oggPage.Header.Flags&FlagCOP != 0 {
+				continue
+			}
+			if (bytes.HasPrefix(packet, VorbisPrefix) || bytes.HasPrefix(packet, OpusPrefix)) && i == len(oggPage.Packets)-1 && segments[len(segments)-1] == MaxSegSize {
+				return nil, errors.New("oggmeta: comments spanning pages are unsupported")
+			}
 			switch {
 			case bytes.HasPrefix(packet, VorbisPrefix):
 				dec.TagReader = bytes.NewReader(packet)
@@ -138,12 +164,11 @@ func (dec *OGGDecoder) readComments() (*OggTag, error) {
 		if err != nil {
 			return nil, err
 		}
-		splitComment := strings.Split(comment, "=")
-		if len(splitComment) != 2 {
+		key, fieldValue, ok := strings.Cut(comment, "=")
+		if !ok || key == "" {
 			continue
 		}
-		fieldName := strings.ToUpper(splitComment[0])
-		fieldValue := splitComment[1]
+		fieldName := strings.ToUpper(key)
 		if fieldName == "METADATA_BLOCK_PICTURE" {
 			// process picture block
 			data, err := base64.StdEncoding.DecodeString(fieldValue)
@@ -162,6 +187,7 @@ func (dec *OGGDecoder) readComments() (*OggTag, error) {
 				}
 			}
 
+			continue
 		}
 		if tagField, ok := tagFieldMapping[fieldName]; ok {
 			field := reflect.ValueOf(oggTag).Elem().FieldByName(tagField)
@@ -221,6 +247,9 @@ func (dec *OGGDecoder) readPictureBlock(data []byte) ([]byte, error) {
 	dataLen, err := readInt(reader, 4)
 	if err != nil {
 		return nil, err
+	}
+	if dataLen < 0 || dataLen > reader.Len() {
+		return nil, fmt.Errorf("oggmeta: invalid picture length %d", dataLen)
 	}
 	output := make([]byte, dataLen)
 	if _, err = io.ReadFull(reader, output); err != nil {
