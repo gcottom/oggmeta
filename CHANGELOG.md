@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v2.0.0
+
+- Use `github.com/gcottom/oggmeta/v2` as the Go module path and depend on AudioMeta Core v2.0.0.
 
 - Added the typed `OpenMetadata` API for Vorbis and Opus.
 - Added lossless multi-value comments and multi-picture editing through the

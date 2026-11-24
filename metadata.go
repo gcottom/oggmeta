@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gcottom/audiometa-core"
+	"github.com/gcottom/audiometa-core/v2"
 )
 
 const (

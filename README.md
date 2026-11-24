@@ -1,18 +1,28 @@
 # OGGMeta
 
-OGGMeta is a metadata reader and writer for OGG Vorbis and Opus files. It's built in pure go. A lot of research went into understanding the OGG format and vorbis comments. This library provides an interface for audiometa v3 to interact with OGG meta tags. 
+OGGMeta is a pure Go metadata reader and writer for Ogg Vorbis and Opus. It
+also provides the Ogg adapter for the AudioMeta v4 SDK.
+
+## Installation
+
+```sh
+go get github.com/gcottom/oggmeta/v2@v2.0.0
+```
+
+Update existing Go imports to `github.com/gcottom/oggmeta/v2`.
+`ReadOGG`, `SaveTags`, and `OggTag` remain available at the v2 path.
 
 ## License
 This project is licensed under the MIT License. See [LICENSE.md](LICENSE.md) for details.
 
 ## Related Links
-[audiometa v3](https://github.com/gcottom/audiometa/v3)
+[AudioMeta v4](https://pkg.go.dev/github.com/gcottom/audiometa/v4)
 
-[mp3meta](https://github.com/gcottom/mp3meta)
+[MP3Meta v2](https://pkg.go.dev/github.com/gcottom/mp3meta/v2)
 
-[mp4meta](https://github.com/gcottom/mp4meta)
+[MP4Meta v2](https://pkg.go.dev/github.com/gcottom/mp4meta/v2)
 
-[flacmeta](https://github.com/gcottom/flacmeta)
+[FLACMeta v2](https://pkg.go.dev/github.com/gcottom/flacmeta/v2)
 
 ## Example
 
@@ -50,8 +60,8 @@ supports typed values, repeated comment fields, and multiple artwork objects.
 import (
     "os"
 
-    "github.com/gcottom/audiometa-core"
-    "github.com/gcottom/oggmeta"
+    "github.com/gcottom/audiometa-core/v2"
+    "github.com/gcottom/oggmeta/v2"
 )
 
 func revise(source, destination string) error {

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gcottom/audiometa-core"
-	"github.com/gcottom/audiometa-core/contracttest"
+	"github.com/gcottom/audiometa-core/v2"
+	"github.com/gcottom/audiometa-core/v2/contracttest"
 )
 
 func TestCanonicalOggAdapterContract(t *testing.T) {

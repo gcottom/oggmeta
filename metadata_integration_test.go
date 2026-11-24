@@ -15,7 +15,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gcottom/audiometa-core"
+	"github.com/gcottom/audiometa-core/v2"
 )
 
 func TestMetadataOggIndependentTools(t *testing.T) {
