@@ -4,6 +4,7 @@ go 1.18
 
 require (
 	github.com/aler9/writerseeker v1.1.0
+	github.com/gcottom/audiometa-core v0.1.0
 	github.com/stretchr/testify v1.10.0
 )
 

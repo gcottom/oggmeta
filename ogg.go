@@ -27,7 +27,8 @@ type OggTag struct {
 	UnmappedFields map[string]string
 	Vendor         string
 
-	reader io.ReadSeeker
+	reader   io.ReadSeeker
+	clearAll bool
 }
 
 func (o *OggTag) ClearAllTags() {
@@ -46,6 +47,7 @@ func (o *OggTag) ClearAllTags() {
 	o.TrackNumber = ""
 	o.TrackTotal = ""
 	o.UnmappedFields = nil
+	o.clearAll = true
 }
 
 func (o *OggTag) GetAlbum() string {

@@ -3,7 +3,6 @@ package oggmeta
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/binary"
 	"errors"
 	"image"
 	"image/jpeg"
@@ -13,8 +12,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-
-	"github.com/aler9/writerseeker"
 )
 
 func (enc *OGGEncoder) WritePackets(flag byte, granulePosition int64, packets [][]byte) error {
@@ -169,14 +166,22 @@ func SaveTags(tag *OggTag, writer io.Writer) error {
 	if _, err := tag.reader.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	tempWriter := &writerseeker.WriterSeeker{}
-	defer tempWriter.Close()
+	tempWriter, err := os.CreateTemp("", "oggmeta-*")
+	if err != nil {
+		return err
+	}
+	defer discardMetadataStage(tempWriter)
 	decoder := &OGGDecoder{Reader: tag.reader}
 	fields := make(map[string]string)
-	for k, v := range tag.UnmappedFields {
+	inputKeys := make([]string, 0, len(tag.UnmappedFields))
+	for k := range tag.UnmappedFields {
+		inputKeys = append(inputKeys, k)
+	}
+	sort.Strings(inputKeys)
+	for _, k := range inputKeys {
 		key := strings.ToUpper(k)
 		if _, mapped := tagFieldMapping[key]; !mapped && key != "METADATA_BLOCK_PICTURE" && key != "" && !strings.Contains(key, "=") {
-			fields[key] = v
+			fields[key] = tag.UnmappedFields[k]
 		}
 	}
 	for key, field := range tagFieldMapping {
@@ -189,26 +194,9 @@ func SaveTags(tag *OggTag, writer io.Writer) error {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	comments := make([]string, 0, len(keys))
-	for _, key := range keys {
-		comments = append(comments, key+"="+fields[key])
+	if tag.CoverArt != nil && *tag.CoverArt == nil {
+		return errors.New("oggmeta: nil cover image")
 	}
-	var img []byte
-	if tag.CoverArt != nil {
-		if *tag.CoverArt == nil {
-			return errors.New("oggmeta: nil cover image")
-		}
-		var buf bytes.Buffer
-		if err := jpeg.Encode(&buf, *tag.CoverArt, nil); err != nil {
-			return err
-		}
-		var err error
-		img, err = createMetadataBlockPicture(buf.Bytes())
-		if err != nil {
-			return err
-		}
-	}
-	replacement := createCommentPacket(comments, img, tag.Codec, tag.Vendor)
 	var serial uint32
 	var sawPage, replaced, ended bool
 	for {
@@ -242,6 +230,10 @@ func SaveTags(tag *OggTag, writer io.Writer) error {
 				if segs[packetEnd-1] == MaxSegSize {
 					return errors.New("oggmeta: comments spanning pages are unsupported")
 				}
+				replacement, err := replaceLegacyComments(packet, tag, fields, keys)
+				if err != nil {
+					return err
+				}
 				n := len(replacement) / MaxSegSize
 				if len(segs)-(packetEnd-packetStart)+n+1 > MaxSegSize {
 					return errors.New("oggmeta: updated comments do not fit their original page")
@@ -264,7 +256,7 @@ func SaveTags(tag *OggTag, writer io.Writer) error {
 		page.Header.CRC = 0
 		page.Header.CRC = calculateChecksum(page.Header.toBytesSlice(), payload, segs)
 		for _, data := range [][]byte{page.Header.toBytesSlice(), segs, payload} {
-			if _, err := tempWriter.Write(data); err != nil {
+			if err := writeMetadataBytes(tempWriter, data); err != nil {
 				return err
 			}
 		}
@@ -284,19 +276,20 @@ func SaveTags(tag *OggTag, writer io.Writer) error {
 		if err != nil {
 			return err
 		}
-		defer w2.Close()
-		if _, err = w2.Write(tempWriter.Bytes()); err != nil {
-			return err
+		copyErr := copyMetadataStage(w2, tempWriter)
+		closeErr := w2.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
 		}
 		if _, err = (writer.(*os.File)).Seek(0, io.SeekEnd); err != nil {
 			return err
 		}
 		return nil
 	}
-	if _, err := io.Copy(writer, tempWriter.BytesReader()); err != nil {
-		return err
-	}
-	return nil
+	return copyMetadataStage(writer, tempWriter)
 }
 
 func createMetadataBlockPicture(albumArtData []byte) ([]byte, error) {
@@ -321,42 +314,120 @@ func createMetadataBlockPicture(albumArtData []byte) ([]byte, error) {
 	return res.Bytes(), nil
 }
 
-func createCommentPacket(commentFields []string, albumArt []byte, codec, vendorString string) []byte {
-	if vendorString == "" {
-		vendorString = "gcottom-oggmeta"
+func replaceLegacyComments(packet []byte, tag *OggTag, fields map[string]string, keys []string) ([]byte, error) {
+	prefix := commentPrefix(tag.Codec)
+	if !bytes.HasPrefix(packet, []byte(prefix)) {
+		return nil, errors.New("oggmeta: invalid codec comment packet")
 	}
+	// Legacy reads historically accepted a Vorbis packet without its framing
+	// bit. Keep that read contract and insert the bit when saving such a packet.
+	original, err := parseCommentMetadata(packet[len(prefix):], "")
+	if err != nil {
+		return nil, err
+	}
+	preserveArtwork := !tag.clearAll && legacyPictureMatches(tag.CoverArt, original.entries)
+	lastValues := make(map[string]string)
+	for _, entry := range original.entries {
+		if key, value, ok := strings.Cut(entry, "="); ok && key != "" {
+			lastValues[strings.ToUpper(key)] = value
+		}
+	}
+	seen := make(map[string]bool)
+	entries := make([]string, 0, len(original.entries)+len(fields))
+	for _, entry := range original.entries {
+		key, _, ok := strings.Cut(entry, "=")
+		key = strings.ToUpper(key)
+		if !ok || key == "" {
+			if !tag.clearAll {
+				entries = append(entries, entry)
+			}
+			continue
+		}
+		if key == pictureComment {
+			if preserveArtwork {
+				entries = append(entries, entry)
+			}
+			continue
+		}
+		value, exists := fields[key]
+		_, mapped := tagFieldMapping[key]
+		preserve := (exists && value == lastValues[key]) ||
+			(!exists && !tag.clearAll && mapped && lastValues[key] == "") ||
+			key == "WAVEFORMATEXTENSIBLE_CHANNEL_MASK"
+		if preserve {
+			entries = append(entries, entry)
+		} else if exists && !seen[key] {
+			entries = append(entries, key+"="+value)
+		}
+		seen[key] = true
+	}
+	for _, key := range keys {
+		if !seen[key] {
+			entries = append(entries, key+"="+fields[key])
+		}
+	}
+	if !preserveArtwork && tag.CoverArt != nil {
+		var buffer bytes.Buffer
+		if err := jpeg.Encode(&buffer, *tag.CoverArt, nil); err != nil {
+			return nil, err
+		}
+		artwork, err := createMetadataBlockPicture(buffer.Bytes())
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, pictureComment+"="+base64.StdEncoding.EncodeToString(artwork))
+	}
+	vendor := tag.Vendor
+	if vendor == "" && original.vendor != "" {
+		vendor = "gcottom-oggmeta"
+	}
+	if tag.Codec == Vorbis && (len(original.trailer) == 0 || original.trailer[0]&1 == 0) {
+		original.trailer = []byte{1}
+	}
+	return encodeCommentMetadata(prefix, vendor, entries, original.trailer)
+}
 
-	buf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(buf, uint32(len(vendorString)))
-	commentPacket := append(buf, []byte(vendorString)...)
-	if len(albumArt) > 0 {
-		binary.LittleEndian.PutUint32(buf, uint32(len(commentFields)+1))
-	} else {
-		binary.LittleEndian.PutUint32(buf, uint32(len(commentFields)))
+func legacyPictureMatches(current *image.Image, entries []string) bool {
+	decoder := &OGGDecoder{}
+	// The legacy read path exposes the last decoded nonempty image.
+	for i := len(entries) - 1; i >= 0; i-- {
+		key, value, ok := strings.Cut(entries[i], "=")
+		if !ok || !strings.EqualFold(key, pictureComment) {
+			continue
+		}
+		block, err := base64.StdEncoding.DecodeString(value)
+		if err != nil {
+			return false
+		}
+		data, err := decoder.readPictureBlock(block)
+		if err != nil {
+			return false
+		}
+		if len(data) == 0 {
+			continue
+		}
+		if current == nil {
+			return false
+		}
+		original, _, err := image.Decode(bytes.NewReader(data))
+		return err == nil && equalLegacyImages(original, *current)
 	}
-	commentPacket = append(commentPacket, buf...)
+	return current == nil
+}
 
-	for _, field := range commentFields {
-		binary.LittleEndian.PutUint32(buf, uint32(len(field)))
-		commentPacket = append(commentPacket, buf...)
-		commentPacket = append(commentPacket, []byte(field)...)
+func equalLegacyImages(a, b image.Image) bool {
+	bounds := a.Bounds()
+	if bounds != b.Bounds() {
+		return false
 	}
-	if codec == Vorbis {
-		commentPacket = append([]byte("\x03vorbis"), commentPacket...)
-	} else {
-		commentPacket = append([]byte("OpusTags"), commentPacket...)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r1, g1, b1, a1 := a.At(x, y).RGBA()
+			r2, g2, b2, a2 := b.At(x, y).RGBA()
+			if r1 != r2 || g1 != g2 || b1 != b2 || a1 != a2 {
+				return false
+			}
+		}
 	}
-	if len(albumArt) > 1 {
-		albumArtBase64 := base64.StdEncoding.EncodeToString(albumArt)
-		fieldLength := len("METADATA_BLOCK_PICTURE=") + len(albumArtBase64)
-		binary.LittleEndian.PutUint32(buf, uint32(fieldLength))
-		commentPacket = append(commentPacket, buf...)
-		commentPacket = append(commentPacket, []byte("METADATA_BLOCK_PICTURE=")...)
-		commentPacket = append(commentPacket, []byte(albumArtBase64)...)
-	}
-	if codec == Vorbis {
-		commentPacket = append(commentPacket, []byte("\x01")...)
-	}
-
-	return commentPacket
+	return true
 }

@@ -17,12 +17,15 @@ func init() {
 }
 
 func calculateChecksum(header, segments, segmentTable []byte) uint32 {
-	data := append(header, segmentTable...)
-	data = append(data, segments...)
+	return checksumParts(header, segmentTable, segments)
+}
 
+func checksumParts(parts ...[]byte) uint32 {
 	var crc uint32
-	for _, b := range data {
-		crc = (crc << 8) ^ crcTable[(crc>>24)^uint32(b)]
+	for _, part := range parts {
+		for _, b := range part {
+			crc = (crc << 8) ^ crcTable[(crc>>24)^uint32(b)]
+		}
 	}
 	return crc
 }
